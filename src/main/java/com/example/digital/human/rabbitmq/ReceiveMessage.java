@@ -6,94 +6,118 @@ import com.example.digital.human.consts.BaiDuConstant;
 import com.example.digital.human.pojo.Parameters;
 import com.example.digital.human.pojo.RequestResult;
 import com.example.digital.human.pojo.WebSocketMessage;
-import com.example.digital.human.service.AgentMessageService;
 import com.example.digital.human.websocket.handler.MyWebSocketHandler;
-import jakarta.annotation.Resource;
+import jakarta.annotation.PreDestroy;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Service;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
-//消费者
 @Service
 public class ReceiveMessage {
-    // 临时存储未形成完整句子的片段
-    private StringBuilder contentCache = new StringBuilder();
 
+    // 单线程线程池，保证顺序且可中断
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+    // 当前正在运行的任务Future引用，方便取消旧任务
+    private final AtomicReference<Future<?>> currentTask = new AtomicReference<>();
+
+    /**
+     * MQ监听方法，提交异步任务执行，接收到新消息时取消上一个任务
+     */
     @RabbitListener(queues = {"bootDirectQueue"})
     public void fanoutReceive(Message message) {
-        // 重置状态变量
-        contentCache.setLength(0);          // 每次监听先清空缓存
-        // 用数组是因为Lambda 中访问的局部变量是不可重新赋值的，但是数组引用不变，因此可以变动里面的内容
-        final boolean[] flagFirst = {true}; // 是否第一句
-        final String[] previousSentence = {null}; // 缓存上一句，实现错峰发送
+        // 取消上一个任务（如果存在且没完成）
+        Future<?> previousFuture = currentTask.getAndSet(null);
+        if (previousFuture != null && !previousFuture.isDone()) {
+            System.out.println("检测到新消息，取消旧任务");
+            previousFuture.cancel(true);  // 发送中断信号给旧任务
+            WebSocketMessage wsMsg = new WebSocketMessage("", true, false);
+            MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsg));
+        }
 
-        byte[] body = message.getBody();
-        String messageBody = new String(body, StandardCharsets.UTF_8);
-        System.out.println("接收消息：" + messageBody);
+        MyWebSocketHandler.closeAllSessions();
 
-        Parameters parameters = new Parameters();
-        parameters.setInput(messageBody);
-        RequestResult requestResult = new RequestResult();
-        requestResult.setParameters(parameters);
-        String jsonInputString = JSON.toJSONString(requestResult);
+        // 提交新任务异步执行
+        Runnable task = () -> processMessage(message);
+        Future<?> future = executor.submit(task);
+        currentTask.set(future);
+    }
 
-        getAgentMessageStreaming1("https://api.coze.cn/v1/workflow/stream_run?workflow_id=7534995985676714024",
-                jsonInputString,
-                chunk -> {
-                    if (previousSentence[0] == null) {
-                        // 缓存第一句，不发送
+    /**
+     * 处理单条消息的完整逻辑
+     * @param message MQ消息
+     */
+    private void processMessage(Message message) {
+        // 内容缓存，独立于实例变量，保证线程安全
+        StringBuilder contentCache = new StringBuilder();
+
+        // 标记变量（是否第一句等）
+        final boolean[] flagFirst = {true};
+        final String[] previousSentence = {null};
+
+        try {
+            byte[] body = message.getBody();
+            String messageBody = new String(body, StandardCharsets.UTF_8);
+            System.out.println("接收消息：" + messageBody);
+
+            Parameters parameters = new Parameters();
+            parameters.setInput(messageBody);
+            RequestResult requestResult = new RequestResult();
+            requestResult.setParameters(parameters);
+            String jsonInputString = JSON.toJSONString(requestResult);
+
+            // 这里调用修改后的流式请求方法，传入contentCache和chunk处理器
+            getAgentMessageStreaming1(
+                    "https://api.coze.cn/v1/workflow/stream_run?workflow_id=7534995985676714024",
+                    jsonInputString,
+                    chunk -> {
+                        // 任务处理中检测线程是否被中断
+                        if (Thread.currentThread().isInterrupted()) {
+                            System.out.println("任务被中断，停止发送数据");
+                            return;
+                        }
+                        // 按原逻辑处理分块数据
+                        if (previousSentence[0] == null) {
+                            previousSentence[0] = chunk;
+                            return;
+                        }
+                        WebSocketMessage wsMsgPrev = new WebSocketMessage(previousSentence[0], false, flagFirst[0]);
+                        System.out.println(JSON.toJSONString(wsMsgPrev));
+                        MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgPrev));
+                        flagFirst[0] = false;
                         previousSentence[0] = chunk;
-                        return;
-                    }
+                    },
+                    contentCache
+            );
 
-                    // 发送上一句（非最后句，last=false）
-                    WebSocketMessage wsMsgPrev = new WebSocketMessage(previousSentence[0], false, flagFirst[0]);
-                    System.out.println(JSON.toJSONString(wsMsgPrev));
-                    MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgPrev));
-                    flagFirst[0] = false;
+            flushCache(previousSentence, flagFirst, contentCache);
 
-                    // 更新缓存为当前句
-                    previousSentence[0] = chunk;
-                });
-
-        // 流结束，发送最后剩余句，last=true
-        flushCache(previousSentence, flagFirst);
-    }
-
-    // 流结束调用，发送最后一句
-    private void flushCache(String[] previousSentence, boolean[] flagFirst) {
-        if (previousSentence[0] != null) {
-            // previousSentence最后一句是否last取决于contentCache是否为空
-            boolean isLast = contentCache.length() == 0;
-            WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], isLast, flagFirst[0]);
-            System.out.println(JSON.toJSONString(wsMsgLast));
-            MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgLast));
-            previousSentence[0] = null;
-        } else {
-            System.out.println("没有剩余句子可发送");
-        }
-
-        String remain = contentCache.toString().trim();
-        if (!remain.isEmpty()) {
-            WebSocketMessage wsMsgRemain = new WebSocketMessage(remain, true, flagFirst[0]);
-            System.out.println(JSON.toJSONString(wsMsgRemain));
-            MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgRemain));
-            contentCache.setLength(0);
+        } catch (Exception e) {
+            System.err.println("处理消息异常：" + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-
-    public void getAgentMessageStreaming1(String pathUrl, String data, Consumer<String> chunkConsumer) {
+    /**
+     * 支持中断的流式请求处理方法
+     * @param pathUrl 请求URL
+     * @param data POST数据
+     * @param chunkConsumer 接收数据块回调
+     * @param contentCache 内容缓存
+     */
+    public void getAgentMessageStreaming1(String pathUrl, String data, Consumer<String> chunkConsumer, StringBuilder contentCache) throws IOException {
         HttpURLConnection conn = null;
         OutputStreamWriter out = null;
         BufferedReader br = null;
@@ -102,7 +126,6 @@ public class ReceiveMessage {
             URL url = new URL(pathUrl);
             conn = (HttpURLConnection) url.openConnection();
 
-            // 配置连接
             conn.setRequestMethod("POST");
             conn.setRequestProperty("accept", "*/*");
             conn.setRequestProperty("connection", "Keep-Alive");
@@ -112,21 +135,25 @@ public class ReceiveMessage {
             conn.setDoOutput(true);
             conn.setDoInput(true);
 
-            // 发送请求数据
             out = new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8);
             out.write(data);
             out.flush();
 
-            // 获取输入流
             InputStream is = conn.getInputStream();
             br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
 
-            char[] buffer = new char[2];// 临时存放读到的字符
+            char[] buffer = new char[2];
             int charsRead;
-            StringBuilder contentBuffer = new StringBuilder();// 把每次读到的字符拼起来
+            StringBuilder contentBuffer = new StringBuilder();
 
             while ((charsRead = br.read(buffer)) != -1) {
-                String chunk = new String(buffer, 0, charsRead);// 把buffer里的字符转化为字符串
+                // 检测线程中断，及时退出
+                if (Thread.currentThread().isInterrupted()) {
+                    System.out.println("HTTP读取被中断，退出");
+                    break;
+                }
+
+                String chunk = new String(buffer, 0, charsRead);
                 contentBuffer.append(chunk);
 
                 int jsonStart = contentBuffer.indexOf("{");
@@ -134,7 +161,7 @@ public class ReceiveMessage {
 
                 if (jsonStart >= 0 && jsonEnd > jsonStart) {
                     String completeJson = contentBuffer.substring(jsonStart, jsonEnd + 1);
-                    processAndSendJson(completeJson, chunkConsumer);
+                    processAndSendJson(completeJson, chunkConsumer, contentCache);
                     contentBuffer.delete(0, jsonEnd + 1);
                 }
             }
@@ -142,36 +169,26 @@ public class ReceiveMessage {
             if (contentBuffer.length() > 0) {
                 String leftoverNoWhitespace = contentBuffer.toString().replaceAll("\\s+", "");
                 if (!leftoverNoWhitespace.isEmpty()) {
-                    processAndSendJson(contentBuffer.toString(), chunkConsumer);
+                    processAndSendJson(contentBuffer.toString(), chunkConsumer, contentCache);
                 }
             }
-
-        } catch (IOException e) {
-            e.printStackTrace();
-            chunkConsumer.accept("{\"error\":\"" + e.getMessage() + "\"}");
         } finally {
-            try {
-                if (br != null) br.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            try {
-                if (out != null) out.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            if (br != null) br.close();
+            if (out != null) out.close();
             if (conn != null) conn.disconnect();
         }
     }
 
-    private void processAndSendJson(String jsonStr, Consumer<String> chunkConsumer) {
-        System.out.println("收到的原始json字符串: " + jsonStr);
+    /**
+     * 处理并发送JSON内容，和之前逻辑类似
+     */
+    private void processAndSendJson(String jsonStr, Consumer<String> chunkConsumer, StringBuilder contentCache) {
+//        System.out.println("收到的原始json字符串: " + jsonStr);
         try {
             long leftBraceCount = jsonStr.chars().filter(ch -> ch == '{').count();
             long rightBraceCount = jsonStr.chars().filter(ch -> ch == '}').count();
 
             if (leftBraceCount > rightBraceCount) {
-                // 补充缺失的右大括号
                 StringBuilder sb = new StringBuilder(jsonStr);
                 for (long i = 0; i < leftBraceCount - rightBraceCount; i++) {
                     sb.append('}');
@@ -186,42 +203,54 @@ public class ReceiveMessage {
                 if (content != null) {
                     String normalizedContent = content.replaceAll("[\\r\\n]+", "").trim();
 
-                    System.out.println("原始content: [" + content + "]");
-                    System.out.println("normalizedContent: [" + normalizedContent + "]");
-                    System.out.println("追加前contentCache内容: [" + contentCache.toString() + "]");
-
                     if (!normalizedContent.isEmpty()) {
                         contentCache.append(normalizedContent);
-                        System.out.println("合并后contentCache内容: [" + contentCache.toString() + "]");
 
                         String contentStr = contentCache.toString();
-                        int lastPeriodIndex = contentStr.lastIndexOf("。");// 找这次json里最后一个句号的位置
+                        int lastPeriodIndex = contentStr.lastIndexOf("。");
 
                         if (lastPeriodIndex != -1) {
                             String sendPart = contentStr.substring(0, lastPeriodIndex + 1);
                             String remainPart = contentStr.substring(lastPeriodIndex + 1);
-                            System.out.println("sendPart: [" + sendPart + "]");
-                            System.out.println("remainPart: [" + remainPart + "]");
 
-                            String[] sentences = sendPart.split("。");// 万一某次json中有多个句号，所以以句号拆分一下
+                            String[] sentences = sendPart.split("。");
                             for (String sentence : sentences) {
                                 sentence = sentence.trim();
                                 if (!sentence.isEmpty()) {
-                                    System.out.println("发送句子: [" + sentence + "。]");
                                     chunkConsumer.accept(sentence + "。");
                                 }
                             }
 
                             contentCache.setLength(0);
                             contentCache.append(remainPart.trim());
-                            System.out.println("拆句后，contentCache重置为: [" + contentCache.toString() + "]");
                         }
                     }
                 }
             }
         } catch (Exception e) {
-            System.err.println("解析JSON出错: " + jsonStr + e.getMessage());
+            System.err.println("解析JSON出错: " + jsonStr + " " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    /**
+     * 发送最后剩余缓存内容
+     */
+    private void flushCache(String[] previousSentence, boolean[] flagFirst, StringBuilder contentCache) {
+        if (previousSentence[0] != null) {
+            boolean isLast = contentCache.length() == 0;
+            WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], isLast, flagFirst[0]);
+            System.out.println(JSON.toJSONString(wsMsgLast));
+            MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgLast));
+            previousSentence[0] = null;
+        }
+
+        String remain = contentCache.toString().trim();
+        if (!remain.isEmpty()) {
+            WebSocketMessage wsMsgRemain = new WebSocketMessage(remain, true, flagFirst[0]);
+            System.out.println(JSON.toJSONString(wsMsgRemain));
+            MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgRemain));
+            contentCache.setLength(0);
         }
     }
 }

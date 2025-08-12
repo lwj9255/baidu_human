@@ -41,4 +41,18 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
             }
         }
     }
+
+    // 关闭所有活跃连接
+    public static void closeAllSessions() {
+        for (WebSocketSession session : sessions) {
+            if (session.isOpen()) {
+                try {
+                    session.close(CloseStatus.NORMAL);
+                    System.out.println("主动关闭连接: " + session.getId());
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
 }
