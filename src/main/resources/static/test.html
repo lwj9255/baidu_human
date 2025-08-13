@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>WebSocket 测试客户端</title>
+    <style>
+        #log {
+            width: 100%;
+            height: 300px;
+            border: 1px solid #ccc;
+            overflow-y: auto;
+            padding: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            background: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+<h2>WebSocket 消息日志</h2>
+<div id="log"></div>
+
+<script>
+    const logDiv = document.getElementById("log");
+    let ws;
+    let reconnectDelay = 500; // 3秒后重连
+
+    function log(msg) {
+        logDiv.textContent += msg + "\n";
+        logDiv.scrollTop = logDiv.scrollHeight; // 滚动到底部
+    }
+
+    function connect() {
+        // 注意替换为你的后端WebSocket地址，http或https根据你的服务器协议
+        const wsUrl = "ws://localhost:9001/ws";
+
+        log("尝试连接：" + wsUrl);
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            log("WebSocket 已连接");
+        };
+
+        ws.onmessage = (event) => {
+            log("收到消息：" + event.data);
+        };
+
+        ws.onerror = (error) => {
+            log("WebSocket 错误");
+            console.error(error);
+            ws.close(); // 触发 onclose 重新连接
+        };
+
+        ws.onclose = (event) => {
+            log(`WebSocket 连接关闭，${reconnectDelay / 1000}秒后重连...`);
+            setTimeout(connect, reconnectDelay);
+        };
+    }
+
+    // 页面加载时启动连接
+    window.onload = () => {
+        connect();
+    };
+</script>
+</body>
+</html>

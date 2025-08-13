@@ -30,7 +30,7 @@ public class ReceiveMessage {
     // 单线程线程池，保证顺序且可中断
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    // 当前正在运行的任务Future引用，方便取消旧任务
+    // 当前正在运行的任务Future引用，用AtomicReference作为对象引用容器保证线程安全
     private final AtomicReference<Future<?>> currentTask = new AtomicReference<>();
 
     /**
@@ -38,19 +38,21 @@ public class ReceiveMessage {
      */
     @RabbitListener(queues = {"bootDirectQueue"})
     public void fanoutReceive(Message message) {
-        // 取消上一个任务（如果存在且没完成）
+        // getAndSet(newvalue) 原子地执行：取出当前存放的值，把存放的值换成newvalue
         Future<?> previousFuture = currentTask.getAndSet(null);
+        // 如果上一个任务存在且没完成，取消并发送结束msg给前端
         if (previousFuture != null && !previousFuture.isDone()) {
             System.out.println("检测到新消息，取消旧任务");
             previousFuture.cancel(true);  // 发送中断信号给旧任务
             WebSocketMessage wsMsg = new WebSocketMessage("", true, false);
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsg));
         }
-
+        // 以关闭旧websocket通道为信号，提示前端需要中断上次任务
         MyWebSocketHandler.closeAllSessions();
 
-        // 提交新任务异步执行
+        // 创建新任务对象，内容是调用processMessage(message)
         Runnable task = () -> processMessage(message);
+        // 将任务提交到线程池
         Future<?> future = executor.submit(task);
         currentTask.set(future);
     }
@@ -60,11 +62,12 @@ public class ReceiveMessage {
      * @param message MQ消息
      */
     private void processMessage(Message message) {
-        // 内容缓存，独立于实例变量，保证线程安全
+        // 内容缓存，单线程环境下可以保证线程安全
         StringBuilder contentCache = new StringBuilder();
 
-        // 标记变量（是否第一句等）
+        // 是否第一句
         final boolean[] flagFirst = {true};
+        // 保存上一句，错峰发送，方便找到最后一句话
         final String[] previousSentence = {null};
 
         try {
@@ -78,7 +81,7 @@ public class ReceiveMessage {
             requestResult.setParameters(parameters);
             String jsonInputString = JSON.toJSONString(requestResult);
 
-            // 这里调用修改后的流式请求方法，传入contentCache和chunk处理器
+            // 调用流式请求方法，传入contentCache和chunk处理器
             getAgentMessageStreaming1(
                     "https://api.coze.cn/v1/workflow/stream_run?workflow_id=7534995985676714024",
                     jsonInputString,
@@ -237,16 +240,19 @@ public class ReceiveMessage {
      * 发送最后剩余缓存内容
      */
     private void flushCache(String[] previousSentence, boolean[] flagFirst, StringBuilder contentCache) {
+        // 若最后第二句话不是空（一般来说不可能最后两句话都是空的，但有时候是空的）
         if (previousSentence[0] != null) {
+            // 若缓存中是空的，那么最后第二句就是最后一句，last=false
             boolean isLast = contentCache.length() == 0;
             WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], isLast, flagFirst[0]);
             System.out.println(JSON.toJSONString(wsMsgLast));
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgLast));
             previousSentence[0] = null;
         }
-
+        // 若缓存中不是空
         String remain = contentCache.toString().trim();
         if (!remain.isEmpty()) {
+            // 缓存中的句子是最后一句话
             WebSocketMessage wsMsgRemain = new WebSocketMessage(remain, true, flagFirst[0]);
             System.out.println(JSON.toJSONString(wsMsgRemain));
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgRemain));
