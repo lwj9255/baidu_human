@@ -49,7 +49,6 @@ public class ReceiveMessage {
         }
         // 以关闭旧websocket通道为信号，提示前端需要中断上次任务
         MyWebSocketHandler.closeAllSessions();
-
         // 创建新任务对象，内容是调用processMessage(message)
         Runnable task = () -> processMessage(message);
         // 将任务提交到线程池
@@ -66,7 +65,7 @@ public class ReceiveMessage {
         StringBuilder contentCache = new StringBuilder();
 
         // 是否第一句
-        final boolean[] flagFirst = {true};
+        final boolean[] flagFirst = {false};
         // 保存上一句，错峰发送，方便找到最后一句话
         final String[] previousSentence = {null};
 
@@ -74,6 +73,29 @@ public class ReceiveMessage {
             byte[] body = message.getBody();
             String messageBody = new String(body, StandardCharsets.UTF_8);
             System.out.println("接收消息：" + messageBody);
+
+            // 等待新的 WebSocket 连接建立（最多等 5 秒）
+            boolean connected = false;
+            for (int i = 0; i < 50; i++) { // 每次 sleep 100ms，最多等 5 秒
+                if (MyWebSocketHandler.hasOpenSession()) {
+                    connected = true;
+                    break;
+                }
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            // 如果超时仍未连接，可以选择直接发（可能会丢）或者跳过
+            if (connected) {
+                WebSocketMessage greeting = new WebSocketMessage("你好，我正在为你检索相关信息，请耐心稍等片刻。", false, true);
+                MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(greeting));
+            } else {
+                System.out.println("警告: 等待新连接超时，第一句可能会丢失");
+            }
 
             Parameters parameters = new Parameters();
             parameters.setInput(messageBody);
@@ -83,7 +105,7 @@ public class ReceiveMessage {
 
             // 调用流式请求方法，传入contentCache和chunk处理器
             getAgentMessageStreaming1(
-                    "https://api.coze.cn/v1/workflow/stream_run?workflow_id=7534995985676714024",
+                    "https://api.coze.cn/v1/workflow/stream_run?workflow_id=7537961634657566747",
                     jsonInputString,
                     chunk -> {
                         // 任务处理中检测线程是否被中断

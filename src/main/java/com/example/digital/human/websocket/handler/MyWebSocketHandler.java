@@ -35,9 +35,13 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
             if (session.isOpen()) {
                 try {
                     session.sendMessage(new TextMessage(message));
+                    System.out.println("消息发送成功："+message);
                 } catch (IOException e) {
+                    System.out.println("消息发送失败："+message);
                     e.printStackTrace();
                 }
+            }else{
+                System.out.println("websocket未连接");
             }
         }
     }
@@ -54,5 +58,15 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
                 }
             }
         }
+    }
+
+    // 判断是否有通道
+    public static boolean hasOpenSession() {
+        for (WebSocketSession session : sessions) {
+            if (session.isOpen()) {
+                return true;
+            }
+        }
+        return false;
     }
 }
