@@ -7,6 +7,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.InputStream;
+
 
 @RestController
 @RequestMapping("/api/message")
@@ -34,18 +36,47 @@ public class MessageControllerTest {
         running = true;
         new Thread(() -> {
             String[] messages = {
-                    "{\"first\":true,\"last\":false,\"message\":\"南瑞集团有限公司（以下简称“南瑞集团”）是国家电网有限公司直属科研产业单位，是我国能源电力及工业控制领域卓越的IT企业，以下为你详细介绍：### 发展历程- 1973年，水利电力部南京自动化研究所成立，是南瑞集团的前身。\"}",
-                    "{\"first\":false,\"last\":false,\"message\":\"- 2001年，由南京自动化研究院整体转制组建南瑞集团有限公司。\"}",
-                    "{\"first\":false,\"last\":true,\"message\":\"同时，在工业控制领域，为冶金、石化、建材等多个行业提供自动化控制系统和技术服务。\"}"
+                    "介绍一下南瑞集团",
+                    "{\"first\":true,\"last\":true,\"message\":\"您好，我正在为您检索相关信息，请稍等片刻。\"}",
+                    "{\"first\":true,\"last\":false,\"message\":\"它在能源电力及工业控制领域颇具影响力。\"}",
+                    "{\"first\":false,\"last\":false,\"message\":\"南瑞技术实力强，拥有大量科研人员，在电网自动化、继电保护等多个关键技术领域成果丰硕。\"}",
+                    "{\"first\":false,\"last\":true,\"message\":\"业务广泛，涵盖电网自动化、电力信息通信、发电及水利自动化等板块。\"}"
             };
 
             try {
                 for (int i = 0; i < 100000 && running; i++) {
                     if (MyWebSocketHandler.hasOpenSession()) {
-                        for (String msg : messages) {
-                            if (!running) break; // 如果被停止，立即退出
+                        for (int j = 0; j < messages.length && running; j++) {
+                            String msg = messages[j];
                             MyWebSocketHandler.sendMessageToAll(msg);
-                            Thread.sleep(3000);
+                            System.out.println("发送文本: " + msg);
+                            Thread.sleep(1000);
+
+                            // 在第二条消息之后插入一张图片
+                            if (j == 1) {
+                                try (InputStream is = getClass().getClassLoader().getResourceAsStream("static/test.png")) {
+                                    if (is != null) {
+                                        byte[] imageBytes = is.readAllBytes();
+                                        MyWebSocketHandler.sendBinaryToAll(imageBytes);
+                                        System.out.println("发送图片，大小: " + imageBytes.length + " 字节");
+                                    } else {
+                                        System.out.println("未找到 test.png");
+                                    }
+                                }
+                                Thread.sleep(1000);
+                            }
+                            if (j == 3) {
+                                try (InputStream is = getClass().getClassLoader().getResourceAsStream("static/test1.png")) {
+                                    if (is != null) {
+                                        byte[] imageBytes = is.readAllBytes();
+                                        MyWebSocketHandler.sendBinaryToAll(imageBytes);
+                                        System.out.println("发送图片，大小: " + imageBytes.length + " 字节");
+                                    } else {
+                                        System.out.println("未找到 test.png");
+                                    }
+                                }
+                                Thread.sleep(1000);
+                            }
                         }
                         System.out.println("一轮发送完成");
                     } else {
@@ -53,7 +84,7 @@ public class MessageControllerTest {
                     }
                     Thread.sleep(4000); // 每轮间隔 4 秒
                 }
-            } catch (InterruptedException e) {
+            } catch (Exception e) {
                 e.printStackTrace();
             } finally {
                 running = false;

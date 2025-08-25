@@ -16,7 +16,6 @@ class DigitalHumanApplicationTests {
     public void testSendMessage() {
 
         String testMsg = "介绍一下南瑞集团";
-//        String testMsg = "讲一个以感叹号结尾的长故事";
         messageService.sendMessage(testMsg);
         System.out.println("消息已发送: " + testMsg);
     }

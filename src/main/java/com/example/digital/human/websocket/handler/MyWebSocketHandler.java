@@ -15,18 +15,18 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         sessions.add(session);
-        System.out.println("WebSocket connected: " + session.getId());
+        System.out.println("WebSocket1 connected: " + session.getId());
     }
 
     @Override
     public void handleTextMessage(WebSocketSession session, TextMessage message) {
-        System.out.println("Received message from client: " + message.getPayload());
+        System.out.println("WebSocket1 Received message from client: " + message.getPayload());
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session);
-        System.out.println("WebSocket disconnected: " + session.getId());
+        System.out.println("WebSocket1 disconnected: " + session.getId());
     }
 
     // 供外部调用，广播消息给所有连接客户端
@@ -35,13 +35,13 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
             if (session.isOpen()) {
                 try {
                     session.sendMessage(new TextMessage(message));
-                    System.out.println("消息发送成功："+message);
+                    System.out.println("WebSocket1消息发送成功："+message);
                 } catch (IOException e) {
-                    System.out.println("消息发送失败："+message);
+                    System.out.println("WebSocket1消息发送失败："+message);
                     e.printStackTrace();
                 }
             }else{
-                System.out.println("websocket未连接");
+                System.out.println("websocket1未连接");
             }
         }
     }
@@ -52,7 +52,7 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
             if (session.isOpen()) {
                 try {
                     session.close(CloseStatus.NORMAL);
-                    System.out.println("主动关闭连接: " + session.getId());
+                    System.out.println("WebSocket1主动关闭连接: " + session.getId());
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
@@ -68,5 +68,20 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
             }
         }
         return false;
+    }
+
+    public static int getOpenSessionCount() {
+        return sessions.size();
+    }
+
+    // 发送二进制数据
+    public static void sendBinaryToAll(byte[] data) throws IOException {
+        synchronized (sessions) {
+            for (WebSocketSession session : sessions) {
+                if (session.isOpen()) {
+                    session.sendMessage(new BinaryMessage(data));
+                }
+            }
+        }
     }
 }

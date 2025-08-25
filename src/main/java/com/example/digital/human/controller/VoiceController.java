@@ -8,6 +8,7 @@ import com.example.digital.human.pojo.RequestResult;
 import com.example.digital.human.rabbitmq.MessageService;
 import com.example.digital.human.service.AgentMessageService;
 import com.example.digital.human.service.VoiceTranslationService;
+import com.example.digital.human.websocket.handler.AiFlagWebSocketHandler;
 import com.example.digital.human.websocket.handler.MyWebSocketHandler;
 import io.micrometer.common.util.StringUtils;
 import jakarta.annotation.Resource;
@@ -28,6 +29,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.function.Consumer;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -127,9 +129,22 @@ public class VoiceController {
         messageService.sendMessage("介绍一下南瑞集团");
 
     }
+
+    /**
+     * 获取关闭智能体标记
+     *
+     * @param closeFlag
+     * @return
+     */
+    @PostMapping("/close")
+    public void getCloseFlag(String closeFlag) {
+        AiFlagWebSocketHandler.sendMessageToAll(closeFlag);
+    }
+
+
     public void getAgentMessageStreaming(String pathUrl, String data, Consumer<String> chunkConsumer) {
         try {
-            System.out.println("-1---"+new Date());
+            System.out.println("-1---" + new Date());
             URL url = new URL(pathUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
@@ -141,20 +156,20 @@ public class VoiceController {
             conn.setDoOutput(true);
             conn.setDoInput(true);
             conn.setChunkedStreamingMode(0);
-            System.out.println("-2---"+new Date());
+            System.out.println("-2---" + new Date());
             // 发送请求
             try (OutputStreamWriter out = new OutputStreamWriter(conn.getOutputStream(), "UTF-8")) {
                 out.write(data);
                 out.flush();
             }
-            System.out.println("-3---"+new Date());
+            System.out.println("-3---" + new Date());
             // 流式读取响应
             try (InputStream is = conn.getInputStream()) {
-                System.out.println("-4---"+new Date());
+                System.out.println("-4---" + new Date());
                 byte[] buffer = new byte[1024]; // 缓冲区大小可调整
                 int bytesRead;
                 StringBuilder chunkBuilder = new StringBuilder();
-                System.out.println("-5---"+new Date());
+                System.out.println("-5---" + new Date());
                 while ((bytesRead = is.read(buffer)) != -1) {
                     String chunk = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
                     chunkBuilder.append(chunk);
@@ -167,17 +182,18 @@ public class VoiceController {
                         chunkBuilder.delete(0, splitIndex + 1);
                     }
                 }
-                System.out.println("-6---"+new Date());
+                System.out.println("-6---" + new Date());
                 // 处理剩余数据
                 if (chunkBuilder.length() > 0) {
                     chunkConsumer.accept(chunkBuilder.toString());
                 }
-                System.out.println("-7---"+new Date());
+                System.out.println("-7---" + new Date());
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
+
     public void getAgentMessageStreaming1(String pathUrl, String data, Consumer<String> chunkConsumer) {
         HttpURLConnection conn = null;
         OutputStreamWriter out = null;

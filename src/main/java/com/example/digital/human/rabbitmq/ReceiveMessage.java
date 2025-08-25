@@ -21,6 +21,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -30,14 +31,19 @@ public class ReceiveMessage {
     // 单线程线程池，保证顺序且可中断
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    // 当前正在运行的任务Future引用，用AtomicReference作为对象引用容器保证线程安全
+    // AtomicReference作为对象引用容器保证线程安全:因为他是原子地读/写/交换
     private final AtomicReference<Future<?>> currentTask = new AtomicReference<>();
+
+    long startTime;
+
+    boolean firstJsonflag = true;
 
     /**
      * MQ监听方法，提交异步任务执行，接收到新消息时取消上一个任务
      */
     @RabbitListener(queues = {"bootDirectQueue"})
     public void fanoutReceive(Message message) {
+        firstJsonflag = true;
         // getAndSet(newvalue) 原子地执行：取出当前存放的值，把存放的值换成newvalue
         Future<?> previousFuture = currentTask.getAndSet(null);
         // 如果上一个任务存在且没完成，取消并发送结束msg给前端
@@ -58,6 +64,7 @@ public class ReceiveMessage {
 
     /**
      * 处理单条消息的完整逻辑
+     *
      * @param message MQ消息
      */
     private void processMessage(Message message) {
@@ -68,6 +75,11 @@ public class ReceiveMessage {
         final boolean[] flagFirst = {false};
         // 保存上一句，错峰发送，方便找到最后一句话
         final String[] previousSentence = {null};
+        // 创建一个带预定功能的单线程线程池
+        final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+//        final AtomicBoolean greetingSent = new AtomicBoolean(false);
+
+        startTime = System.currentTimeMillis(); // 记录开始时间
 
         try {
             byte[] body = message.getBody();
@@ -75,10 +87,11 @@ public class ReceiveMessage {
             System.out.println("接收消息：" + messageBody);
 
             // 等待新的 WebSocket 连接建立（最多等 5 秒）
-            boolean connected = false;
+            boolean connectedEnough = false;
             for (int i = 0; i < 50; i++) { // 每次 sleep 100ms，最多等 5 秒
-                if (MyWebSocketHandler.hasOpenSession()) {
-                    connected = true;
+                int sessionCount = MyWebSocketHandler.getOpenSessionCount();
+                if (sessionCount >= 2) {
+                    connectedEnough = true;
                     break;
                 }
                 try {
@@ -90,12 +103,39 @@ public class ReceiveMessage {
             }
 
             // 如果超时仍未连接，可以选择直接发（可能会丢）或者跳过
-            if (connected) {
-                WebSocketMessage greeting = new WebSocketMessage("你好，我正在为你检索相关信息，请耐心稍等片刻。", false, true);
-                MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(greeting));
+            if (connectedEnough || MyWebSocketHandler.getOpenSessionCount() > 0) {
+                MyWebSocketHandler.sendMessageToAll(messageBody);
+                System.out.println("发送问题："+messageBody);
             } else {
                 System.out.println("警告: 等待新连接超时，第一句可能会丢失");
             }
+
+            ScheduledFuture<?> greetingFuture = scheduler.schedule(() -> {
+                if (previousSentence[0] == null) { // 2秒内没有第一句话
+                    // 准备欢迎语数组
+                    String[] greetings = new String[]{
+                            "您好，我正在为您检索相关信息，请稍等片刻。",
+                            "您好，请稍等，我正在为您处理请求。",
+                            "我正在为您搜集相关内容，请耐心等待。",
+                            "您好，请稍等，我正在努力获取相关信息。",
+                            "您好，正在快速为你整理答案，请耐心等待。",
+                            "您好，我正在查找相关资料，请稍等一下。",
+                            "您好，请耐心等待，我正在努力获取数据。",
+                            "您好，正在为您检索内容，请稍候片刻。"
+                    };
+                    // 随机选择一句
+                    int index = ThreadLocalRandom.current().nextInt(greetings.length);
+                    String selectedGreeting = greetings[index];
+
+                    WebSocketMessage greeting = new WebSocketMessage(
+                            selectedGreeting,
+                            true,
+                            true
+                    );
+                    MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(greeting));
+//                    greetingSent.set(true);
+                }
+            }, 2, TimeUnit.SECONDS);
 
             Parameters parameters = new Parameters();
             parameters.setInput(messageBody);
@@ -113,9 +153,20 @@ public class ReceiveMessage {
                             System.out.println("任务被中断，停止发送数据");
                             return;
                         }
-                        // 按原逻辑处理分块数据
+                        // 上一句话存着不发
                         if (previousSentence[0] == null) {
                             previousSentence[0] = chunk;
+                            flagFirst[0] = true;
+
+                            // 记录第一个句子到达时间
+//                            long firstSentenceTime = System.currentTimeMillis();
+//                            long delayMs = firstSentenceTime - startTime;
+//                            System.out.println("第一句话到达延迟: " + delayMs + "ms");
+
+//                            if (!greetingSent.get()) {
+//                                greetingFuture.cancel(false);
+//                            }
+
                             return;
                         }
                         WebSocketMessage wsMsgPrev = new WebSocketMessage(previousSentence[0], false, flagFirst[0]);
@@ -123,6 +174,12 @@ public class ReceiveMessage {
                         MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgPrev));
                         flagFirst[0] = false;
                         previousSentence[0] = chunk;
+//                        if (firstJsonflag) {
+//                            long firstSentenceTime = System.currentTimeMillis();
+//                            long delayMs = firstSentenceTime - startTime;
+//                            System.out.println("第一个json到达延迟: " + delayMs + "ms");
+//                            firstJsonflag = false;
+//                        }
                     },
                     contentCache
             );
@@ -137,10 +194,11 @@ public class ReceiveMessage {
 
     /**
      * 支持中断的流式请求处理方法
-     * @param pathUrl 请求URL
-     * @param data POST数据
+     *
+     * @param pathUrl       请求URL
+     * @param data          POST数据
      * @param chunkConsumer 接收数据块回调
-     * @param contentCache 内容缓存
+     * @param contentCache  内容缓存
      */
     public void getAgentMessageStreaming1(String pathUrl, String data, Consumer<String> chunkConsumer, StringBuilder contentCache) throws IOException {
         HttpURLConnection conn = null;
@@ -167,7 +225,7 @@ public class ReceiveMessage {
             InputStream is = conn.getInputStream();
             br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
 
-            char[] buffer = new char[2];
+            char[] buffer = new char[128];
             int charsRead;
             StringBuilder contentBuffer = new StringBuilder();
 
@@ -269,7 +327,7 @@ public class ReceiveMessage {
             WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], isLast, flagFirst[0]);
             System.out.println(JSON.toJSONString(wsMsgLast));
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgLast));
-            previousSentence[0] = null;
+//            previousSentence[0] = null;
         }
         // 若缓存中不是空
         String remain = contentCache.toString().trim();

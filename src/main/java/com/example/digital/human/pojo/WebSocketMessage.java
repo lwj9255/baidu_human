@@ -4,6 +4,7 @@ public class WebSocketMessage {
     private String message;
     private boolean last;
     private boolean first;
+    private Integer type;
 
     public WebSocketMessage() {
     }

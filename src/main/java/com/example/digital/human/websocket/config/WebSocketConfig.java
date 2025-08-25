@@ -1,6 +1,7 @@
 package com.example.digital.human.websocket.config;
 
 
+import com.example.digital.human.websocket.handler.AiFlagWebSocketHandler;
 import com.example.digital.human.websocket.handler.MyWebSocketHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -14,10 +15,18 @@ public class WebSocketConfig implements WebSocketConfigurer {
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(myWebSocketHandler(), "/ws")
                 .setAllowedOrigins("*");
+        // 第二个WebSocket端点
+        registry.addHandler(aiFlagWebSocketHandler(), "/ws/aiFlag")
+                .setAllowedOrigins("*");
     }
 
     @Bean
     public MyWebSocketHandler myWebSocketHandler() {
         return new MyWebSocketHandler();
+    }
+
+    @Bean
+    public AiFlagWebSocketHandler aiFlagWebSocketHandler() {
+        return new AiFlagWebSocketHandler();
     }
 }
