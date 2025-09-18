@@ -1,11 +1,14 @@
 package com.example.digital.human.websocket.handler;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.util.Base64;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import com.example.digital.human.pojo.WebSocketMessage;
 
 public class MyWebSocketHandler extends TextWebSocketHandler {
 
@@ -75,13 +78,10 @@ public class MyWebSocketHandler extends TextWebSocketHandler {
     }
 
     // 发送二进制数据
-    public static void sendBinaryToAll(byte[] data) throws IOException {
-        synchronized (sessions) {
-            for (WebSocketSession session : sessions) {
-                if (session.isOpen()) {
-                    session.sendMessage(new BinaryMessage(data));
-                }
-            }
-        }
+    public static void sendBinaryToAll(byte[] data, int type) throws IOException {
+        WebSocketMessage msg = new WebSocketMessage(Base64.getEncoder().encodeToString(data),false,false,type);
+        String json = new ObjectMapper().writeValueAsString(msg);
+        sendMessageToAll(json);
     }
+
 }

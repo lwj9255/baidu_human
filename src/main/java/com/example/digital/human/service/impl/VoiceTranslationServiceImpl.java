@@ -19,8 +19,8 @@ import java.util.concurrent.TimeUnit;
 
 @Service
 public class VoiceTranslationServiceImpl implements VoiceTranslationService {
-    public static final String API_KEY = "bce-v3/ALTAK-PHa4FJkT1VDEZKj6oDnjn/81ceb86aabc275642c728f7ad38b857758748feb";
-    public static final String SECRET_KEY = "WygwzfmTBWeDFORnNhVIE8N9ECUuJtRw";
+    public static final String API_KEY = "Q0VLHjDEY8qXLDhWgtvCRhw4";
+    public static final String SECRET_KEY = "qp8rub5VPolHrLkCC1zP1Q8v3QZoHSiB";
 
     public static final OkHttpClient HTTP_CLIENT = new OkHttpClient().newBuilder().readTimeout(300, TimeUnit.SECONDS).build();
     @Resource
@@ -45,7 +45,7 @@ public class VoiceTranslationServiceImpl implements VoiceTranslationService {
 
         String json = String.format("{\"format\":\"pcm\",\"rate\":16000,\"channel\":1," +
                         "\"cuid\":\"jpWZtRhK7dfE9Aq8HNay3EJ98AopzQtX\",\"dev_pid\":80001," +
-                        "\"speech\":\"%s\",\"len\":%d,\"token\":\"24.aeea6e0ab7daad7ee3ff285a4da078c7.2592000.1756898832.282335-119689951\"}",
+                        "\"speech\":\"%s\",\"len\":%d,\"token\":\"" + getAccessToken() + "\"}",
                 speech, fileSize);
 //        RequestBody body = RequestBody.create(mediaType, "{\"format\":\"pcm\",\"rate\":16000,\"channel\":1,\"cuid\":\"jpWZtRhK7dfE9Aq8HNay3EJ98AopzQtX\",\"dev_pid\":80001,\"speech\":\"" + aaa + "\",\"len\":%d,\"token\":\"24.aeea6e0ab7daad7ee3ff285a4da078c7.2592000.1756898832.282335-119689951\"}");
         RequestBody body = RequestBody.create(mediaType, json);
@@ -89,7 +89,7 @@ public class VoiceTranslationServiceImpl implements VoiceTranslationService {
      * @return 鉴权签名（Access Token）
      * @throws IOException IO异常
      */
-    public String getAccessToken() throws IOException {
+    static String getAccessToken() throws IOException {
         MediaType mediaType = MediaType.parse("application/x-www-form-urlencoded");
         RequestBody body = RequestBody.create(mediaType, "grant_type=client_credentials&client_id=" + API_KEY
                 + "&client_secret=" + SECRET_KEY);

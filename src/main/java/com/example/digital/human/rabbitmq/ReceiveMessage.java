@@ -50,7 +50,7 @@ public class ReceiveMessage {
         if (previousFuture != null && !previousFuture.isDone()) {
             System.out.println("检测到新消息，取消旧任务");
             previousFuture.cancel(true);  // 发送中断信号给旧任务
-            WebSocketMessage wsMsg = new WebSocketMessage("", true, false);
+            WebSocketMessage wsMsg = new WebSocketMessage("", false, true, 1);
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsg));
         }
         // 以关闭旧websocket通道为信号，提示前端需要中断上次任务
@@ -104,38 +104,45 @@ public class ReceiveMessage {
 
             // 如果超时仍未连接，可以选择直接发（可能会丢）或者跳过
             if (connectedEnough || MyWebSocketHandler.getOpenSessionCount() > 0) {
-                MyWebSocketHandler.sendMessageToAll(messageBody);
-                System.out.println("发送问题："+messageBody);
+                WebSocketMessage question = new WebSocketMessage(
+                        messageBody,
+                        false,
+                        false,
+                        0
+                );
+                MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(question));
+                System.out.println("发送问题：" + messageBody);
             } else {
                 System.out.println("警告: 等待新连接超时，第一句可能会丢失");
             }
 
-            ScheduledFuture<?> greetingFuture = scheduler.schedule(() -> {
-                if (previousSentence[0] == null) { // 2秒内没有第一句话
-                    // 准备欢迎语数组
-                    String[] greetings = new String[]{
-                            "您好，我正在为您检索相关信息，请稍等片刻。",
-                            "您好，请稍等，我正在为您处理请求。",
-                            "我正在为您搜集相关内容，请耐心等待。",
-                            "您好，请稍等，我正在努力获取相关信息。",
-                            "您好，正在快速为你整理答案，请耐心等待。",
-                            "您好，我正在查找相关资料，请稍等一下。",
-                            "您好，请耐心等待，我正在努力获取数据。",
-                            "您好，正在为您检索内容，请稍候片刻。"
-                    };
-                    // 随机选择一句
-                    int index = ThreadLocalRandom.current().nextInt(greetings.length);
-                    String selectedGreeting = greetings[index];
-
-                    WebSocketMessage greeting = new WebSocketMessage(
-                            selectedGreeting,
-                            true,
-                            true
-                    );
-                    MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(greeting));
-//                    greetingSent.set(true);
-                }
-            }, 2, TimeUnit.SECONDS);
+//            ScheduledFuture<?> greetingFuture = scheduler.schedule(() -> {
+//                if (previousSentence[0] == null) { // 2秒内没有第一句话
+//                    // 准备欢迎语数组
+//                    String[] greetings = new String[]{
+//                            "您好，我正在为您检索相关信息，请稍等片刻。",
+//                            "您好，请稍等，我正在为您处理请求。",
+//                            "我正在为您搜集相关内容，请耐心等待。",
+//                            "您好，请稍等，我正在努力获取相关信息。",
+//                            "您好，正在快速为你整理答案，请耐心等待。",
+//                            "您好，我正在查找相关资料，请稍等一下。",
+//                            "您好，请耐心等待，我正在努力获取数据。",
+//                            "您好，正在为您检索内容，请稍候片刻。"
+//                    };
+//                    // 随机选择一句
+//                    int index = ThreadLocalRandom.current().nextInt(greetings.length);
+//                    String selectedGreeting = greetings[index];
+//
+//                    WebSocketMessage greeting = new WebSocketMessage(
+//                            selectedGreeting,
+//                            true,
+//                            true,
+//                            1
+//                    );
+//                    MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(greeting));
+////                    greetingSent.set(true);
+//                }
+//            }, 2, TimeUnit.SECONDS);
 
             Parameters parameters = new Parameters();
             parameters.setInput(messageBody);
@@ -144,7 +151,7 @@ public class ReceiveMessage {
             String jsonInputString = JSON.toJSONString(requestResult);
 
             // 调用流式请求方法，传入contentCache和chunk处理器
-            getAgentMessageStreaming1(
+            getAgentMessageStreaming(
                     "https://api.coze.cn/v1/workflow/stream_run?workflow_id=7537961634657566747",
                     jsonInputString,
                     chunk -> {
@@ -169,7 +176,7 @@ public class ReceiveMessage {
 
                             return;
                         }
-                        WebSocketMessage wsMsgPrev = new WebSocketMessage(previousSentence[0], false, flagFirst[0]);
+                        WebSocketMessage wsMsgPrev = new WebSocketMessage(previousSentence[0], flagFirst[0], false, 1);
                         System.out.println(JSON.toJSONString(wsMsgPrev));
                         MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgPrev));
                         flagFirst[0] = false;
@@ -200,7 +207,7 @@ public class ReceiveMessage {
      * @param chunkConsumer 接收数据块回调
      * @param contentCache  内容缓存
      */
-    public void getAgentMessageStreaming1(String pathUrl, String data, Consumer<String> chunkConsumer, StringBuilder contentCache) throws IOException {
+    public void getAgentMessageStreaming(String pathUrl, String data, Consumer<String> chunkConsumer, StringBuilder contentCache) throws IOException {
         HttpURLConnection conn = null;
         OutputStreamWriter out = null;
         BufferedReader br = null;
@@ -284,7 +291,7 @@ public class ReceiveMessage {
             if (json.containsKey("content")) {
                 String content = json.getString("content");
                 if (content != null) {
-                    String normalizedContent = content.replaceAll("[\\r\\n]+", "").trim();
+                    String normalizedContent = content.replaceAll("[\\r\\n#*]+", "").trim();
 
                     if (!normalizedContent.isEmpty()) {
                         contentCache.append(normalizedContent);
@@ -324,7 +331,7 @@ public class ReceiveMessage {
         if (previousSentence[0] != null) {
             // 若缓存中是空的，那么最后第二句就是最后一句，last=false
             boolean isLast = contentCache.length() == 0;
-            WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], isLast, flagFirst[0]);
+            WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], flagFirst[0], isLast, 1);
             System.out.println(JSON.toJSONString(wsMsgLast));
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgLast));
 //            previousSentence[0] = null;
@@ -333,7 +340,7 @@ public class ReceiveMessage {
         String remain = contentCache.toString().trim();
         if (!remain.isEmpty()) {
             // 缓存中的句子是最后一句话
-            WebSocketMessage wsMsgRemain = new WebSocketMessage(remain, true, flagFirst[0]);
+            WebSocketMessage wsMsgRemain = new WebSocketMessage(remain, flagFirst[0], true, 1);
             System.out.println(JSON.toJSONString(wsMsgRemain));
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgRemain));
             contentCache.setLength(0);

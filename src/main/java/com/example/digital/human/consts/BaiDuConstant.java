@@ -2,5 +2,5 @@ package com.example.digital.human.consts;
 
 public interface BaiDuConstant {
     //    agent回答的权限
-    String AUTHORIZATION = "Bearer pat_OAuUtlEgGJYaUl20CItJDmado7tmNfkxGmjIpQ3SDnNVF3Msc63roMvFBwdZUOkJ";
+    String AUTHORIZATION = "Bearer pat_rSkT0HXmd4ji5YUncBwCtoZ43BIICziyB1lzIbWr5tOWRft5lHGy0EOMOpEfqhw2";
 }

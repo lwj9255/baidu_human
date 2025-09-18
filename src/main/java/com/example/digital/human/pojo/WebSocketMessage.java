@@ -4,15 +4,25 @@ public class WebSocketMessage {
     private String message;
     private boolean last;
     private boolean first;
+    // 0-问题，1-文字回答，2-图片回答，3-表格回答
     private Integer type;
 
     public WebSocketMessage() {
     }
 
-    public WebSocketMessage(String message, boolean last, boolean first) {
+    public WebSocketMessage(String message, boolean first, boolean last, Integer type) {
         this.message = message;
         this.last = last;
         this.first = first;
+        this.type = type;
+    }
+
+    public Integer getType() {
+        return type;
+    }
+
+    public void setType(Integer type) {
+        this.type = type;
     }
 
     public String getMessage() {
@@ -39,12 +49,14 @@ public class WebSocketMessage {
         this.first = first;
     }
 
+
     @Override
     public String toString() {
         return "WebSocketMessage{" +
                 "message='" + message + '\'' +
                 ", last=" + last +
                 ", first=" + first +
+                ", type=" + type +
                 '}';
     }
 }
