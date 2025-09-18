@@ -70,9 +70,13 @@ public class ReceiveMessage {
     private void processMessage(Message message) {
         // 内容缓存，单线程环境下可以保证线程安全
         StringBuilder contentCache = new StringBuilder();
+        // 标记本轮是否正常结束（收到 node_is_finish:true）
+        final AtomicBoolean normalFinish = new AtomicBoolean(false);
+        // 标记本轮是否被取消/中断（线程被打断）
+        final AtomicBoolean aborted = new AtomicBoolean(false);
 
-        // 是否第一句
-        final boolean[] flagFirst = {false};
+        // 是否已经发送过任意一包（用于保证“首包一定 first:true”）
+        final AtomicBoolean hasSentAny = new AtomicBoolean(false);
         // 保存上一句，错峰发送，方便找到最后一句话
         final String[] previousSentence = {null};
         // 创建一个带预定功能的单线程线程池
@@ -155,44 +159,34 @@ public class ReceiveMessage {
                     "https://api.coze.cn/v1/workflow/stream_run?workflow_id=7537961634657566747",
                     jsonInputString,
                     chunk -> {
-                        // 任务处理中检测线程是否被中断
                         if (Thread.currentThread().isInterrupted()) {
                             System.out.println("任务被中断，停止发送数据");
+                            aborted.set(true);
                             return;
                         }
-                        // 上一句话存着不发
                         if (previousSentence[0] == null) {
                             previousSentence[0] = chunk;
-                            flagFirst[0] = true;
-
-                            // 记录第一个句子到达时间
-//                            long firstSentenceTime = System.currentTimeMillis();
-//                            long delayMs = firstSentenceTime - startTime;
-//                            System.out.println("第一句话到达延迟: " + delayMs + "ms");
-
-//                            if (!greetingSent.get()) {
-//                                greetingFuture.cancel(false);
-//                            }
-
                             return;
                         }
-                        WebSocketMessage wsMsgPrev = new WebSocketMessage(previousSentence[0], flagFirst[0], false, 1);
+                        boolean isFirstSend = !hasSentAny.get();
+                        WebSocketMessage wsMsgPrev = new WebSocketMessage(previousSentence[0], isFirstSend, false, 1);
                         System.out.println(JSON.toJSONString(wsMsgPrev));
                         MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgPrev));
-                        flagFirst[0] = false;
+                        hasSentAny.set(true);
+
                         previousSentence[0] = chunk;
-//                        if (firstJsonflag) {
-//                            long firstSentenceTime = System.currentTimeMillis();
-//                            long delayMs = firstSentenceTime - startTime;
-//                            System.out.println("第一个json到达延迟: " + delayMs + "ms");
-//                            firstJsonflag = false;
-//                        }
                     },
-                    contentCache
+                    contentCache,
+                    normalFinish,
+                    aborted
             );
 
-            flushCache(previousSentence, flagFirst, contentCache);
-
+            // 若本轮已被中断（比如下一轮问题来了），不要再把残句 flush 出去
+            if (aborted.get()) {
+                System.out.println("本轮已中断，跳过 flushCache 以避免半句落地");
+                return;
+            }
+            flushCache(previousSentence, hasSentAny, contentCache, normalFinish);
         } catch (Exception e) {
             System.err.println("处理消息异常：" + e.getMessage());
             e.printStackTrace();
@@ -207,7 +201,11 @@ public class ReceiveMessage {
      * @param chunkConsumer 接收数据块回调
      * @param contentCache  内容缓存
      */
-    public void getAgentMessageStreaming(String pathUrl, String data, Consumer<String> chunkConsumer, StringBuilder contentCache) throws IOException {
+    public void getAgentMessageStreaming(String pathUrl, String data,
+                                         Consumer<String> chunkConsumer,
+                                         StringBuilder contentCache,
+                                         AtomicBoolean normalFinish,
+                                         AtomicBoolean aborted) throws IOException{
         HttpURLConnection conn = null;
         OutputStreamWriter out = null;
         BufferedReader br = null;
@@ -240,6 +238,7 @@ public class ReceiveMessage {
                 // 检测线程中断，及时退出
                 if (Thread.currentThread().isInterrupted()) {
                     System.out.println("HTTP读取被中断，退出");
+                    aborted.set(true);
                     break;
                 }
 
@@ -251,7 +250,7 @@ public class ReceiveMessage {
 
                 if (jsonStart >= 0 && jsonEnd > jsonStart) {
                     String completeJson = contentBuffer.substring(jsonStart, jsonEnd + 1);
-                    processAndSendJson(completeJson, chunkConsumer, contentCache);
+                    processAndSendJson(completeJson, chunkConsumer, contentCache, normalFinish);
                     contentBuffer.delete(0, jsonEnd + 1);
                 }
             }
@@ -259,7 +258,7 @@ public class ReceiveMessage {
             if (contentBuffer.length() > 0) {
                 String leftoverNoWhitespace = contentBuffer.toString().replaceAll("\\s+", "");
                 if (!leftoverNoWhitespace.isEmpty()) {
-                    processAndSendJson(contentBuffer.toString(), chunkConsumer, contentCache);
+                    processAndSendJson(contentBuffer.toString(), chunkConsumer, contentCache, normalFinish);
                 }
             }
         } finally {
@@ -272,8 +271,11 @@ public class ReceiveMessage {
     /**
      * 处理并发送JSON内容，和之前逻辑类似
      */
-    private void processAndSendJson(String jsonStr, Consumer<String> chunkConsumer, StringBuilder contentCache) {
-//        System.out.println("收到的原始json字符串: " + jsonStr);
+    private void processAndSendJson(String jsonStr,
+                                    Consumer<String> chunkConsumer,
+                                    StringBuilder contentCache,
+                                    AtomicBoolean normalFinish){
+        System.out.println("收到的原始json字符串: " + jsonStr);
         try {
             long leftBraceCount = jsonStr.chars().filter(ch -> ch == '{').count();
             long rightBraceCount = jsonStr.chars().filter(ch -> ch == '}').count();
@@ -287,27 +289,46 @@ public class ReceiveMessage {
                 System.out.println("自动补全后的json字符串: " + jsonStr);
             }
             JSONObject json = JSON.parseObject(jsonStr);
-
+            // 标记是否正常结束（兼容你日志里的字段）
+            if (json.containsKey("node_is_finish")) {
+                try {
+                    Boolean fin = json.getBoolean("node_is_finish");
+                    if (Boolean.TRUE.equals(fin)) {
+                        normalFinish.set(true);
+                    }
+                } catch (Exception ignore) {}
+            }
             if (json.containsKey("content")) {
                 String content = json.getString("content");
                 if (content != null) {
-                    String normalizedContent = content.replaceAll("[\\r\\n#*]+", "").trim();
+                    // 保留换行，用作潜在句末；仅去掉装饰符
+                    String normalizedContent = content.replaceAll("[#*]+", "").trim();
 
                     if (!normalizedContent.isEmpty()) {
                         contentCache.append(normalizedContent);
 
                         String contentStr = contentCache.toString();
-                        int lastPeriodIndex = contentStr.lastIndexOf("。");
 
-                        if (lastPeriodIndex != -1) {
-                            String sendPart = contentStr.substring(0, lastPeriodIndex + 1);
-                            String remainPart = contentStr.substring(lastPeriodIndex + 1);
+                        // 允许的句末标点集合
+                        String endings = "。！？!?；;：:\n\r";
+                        int lastEndIdx = -1;
+                        for (int i = contentStr.length() - 1; i >= 0; i--) {
+                            if (endings.indexOf(contentStr.charAt(i)) >= 0) {
+                                lastEndIdx = i;
+                                break;
+                            }
+                        }
 
-                            String[] sentences = sendPart.split("。");
+                        if (lastEndIdx >= 0) {
+                            String sendPart = contentStr.substring(0, lastEndIdx + 1);
+                            String remainPart = contentStr.substring(lastEndIdx + 1);
+
+                            // 以句末标点切分，保留标点（基于后行断言）
+                            String[] sentences = sendPart.split("(?<=[。！？!?；;：:\n\r])");
                             for (String sentence : sentences) {
                                 sentence = sentence.trim();
                                 if (!sentence.isEmpty()) {
-                                    chunkConsumer.accept(sentence + "。");
+                                    chunkConsumer.accept(sentence);
                                 }
                             }
 
@@ -326,23 +347,56 @@ public class ReceiveMessage {
     /**
      * 发送最后剩余缓存内容
      */
-    private void flushCache(String[] previousSentence, boolean[] flagFirst, StringBuilder contentCache) {
-        // 若最后第二句话不是空（一般来说不可能最后两句话都是空的，但有时候是空的）
+    private void flushCache(String[] previousSentence,
+                            AtomicBoolean hasSentAny,
+                            StringBuilder contentCache,
+                            AtomicBoolean normalFinish) {
+        String remain = contentCache.toString().trim();
+
+        // 句末标点集合
+        String endings = "。！？!?；;：:";
+        boolean remainHasEnding = !remain.isEmpty() && endings.indexOf(remain.charAt(remain.length() - 1)) >= 0;
+
+        // 情况A：有上一句缓存（上一句是完整句，还没发出去）
         if (previousSentence[0] != null) {
-            // 若缓存中是空的，那么最后第二句就是最后一句，last=false
-            boolean isLast = contentCache.length() == 0;
-            WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], flagFirst[0], isLast, 1);
+            // 正常结束 且 没有剩余 -> 上一句就是最后一句
+            // 异常结束 且 有残句但未到句末 -> 仍然把上一句作为 last:true（丢弃半句）
+            boolean forceLast =
+                    (remain.isEmpty()) || (!normalFinish.get() && !remainHasEnding);
+
+            boolean isFirstSend = !hasSentAny.get();
+            WebSocketMessage wsMsgLast = new WebSocketMessage(previousSentence[0], isFirstSend, forceLast, 1);
             System.out.println(JSON.toJSONString(wsMsgLast));
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgLast));
-//            previousSentence[0] = null;
+            hasSentAny.set(true);
+
+            // 如果已经作为最后一句发出，并且是不正常结束导致的半句，则后面的半句直接丢弃
+            if (forceLast && !normalFinish.get() && !remain.isEmpty() && !remainHasEnding) {
+                System.out.println("异常结束：丢弃未完半句 => " + remain);
+                contentCache.setLength(0);
+                return;
+            }
         }
-        // 若缓存中不是空
-        String remain = contentCache.toString().trim();
+
+        // 情况B：还有剩余（可能是完整句或半句）
         if (!remain.isEmpty()) {
-            // 缓存中的句子是最后一句话
-            WebSocketMessage wsMsgRemain = new WebSocketMessage(remain, flagFirst[0], true, 1);
+            // 正常结束：若无句末标点，补一个句号使其读起来完整
+            if (normalFinish.get() && !remainHasEnding) {
+                remain = remain + "。";
+            }
+
+            // 异常结束：只在“已经有句末标点”的前提下发出剩余；否则丢弃
+            if (!normalFinish.get() && !remainHasEnding) {
+                System.out.println("异常结束：丢弃未完半句 => " + remain);
+                contentCache.setLength(0);
+                return;
+            }
+
+            boolean isFirstSend = !hasSentAny.get();
+            WebSocketMessage wsMsgRemain = new WebSocketMessage(remain, isFirstSend, true, 1);
             System.out.println(JSON.toJSONString(wsMsgRemain));
             MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(wsMsgRemain));
+            hasSentAny.set(true);
             contentCache.setLength(0);
         }
     }
