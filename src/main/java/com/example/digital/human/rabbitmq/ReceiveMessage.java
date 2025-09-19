@@ -120,34 +120,6 @@ public class ReceiveMessage {
                 System.out.println("警告: 等待新连接超时，第一句可能会丢失");
             }
 
-//            ScheduledFuture<?> greetingFuture = scheduler.schedule(() -> {
-//                if (previousSentence[0] == null) { // 2秒内没有第一句话
-//                    // 准备欢迎语数组
-//                    String[] greetings = new String[]{
-//                            "您好，我正在为您检索相关信息，请稍等片刻。",
-//                            "您好，请稍等，我正在为您处理请求。",
-//                            "我正在为您搜集相关内容，请耐心等待。",
-//                            "您好，请稍等，我正在努力获取相关信息。",
-//                            "您好，正在快速为你整理答案，请耐心等待。",
-//                            "您好，我正在查找相关资料，请稍等一下。",
-//                            "您好，请耐心等待，我正在努力获取数据。",
-//                            "您好，正在为您检索内容，请稍候片刻。"
-//                    };
-//                    // 随机选择一句
-//                    int index = ThreadLocalRandom.current().nextInt(greetings.length);
-//                    String selectedGreeting = greetings[index];
-//
-//                    WebSocketMessage greeting = new WebSocketMessage(
-//                            selectedGreeting,
-//                            true,
-//                            true,
-//                            1
-//                    );
-//                    MyWebSocketHandler.sendMessageToAll(JSON.toJSONString(greeting));
-////                    greetingSent.set(true);
-//                }
-//            }, 2, TimeUnit.SECONDS);
-
             Parameters parameters = new Parameters();
             parameters.setInput(messageBody);
             RequestResult requestResult = new RequestResult();
@@ -324,7 +296,7 @@ public class ReceiveMessage {
                             String remainPart = contentStr.substring(lastEndIdx + 1);
 
                             // 以句末标点切分，保留标点（基于后行断言）
-                            String[] sentences = sendPart.split("(?<=[。！？!?；;：:\n\r])");
+                            String[] sentences = sendPart.split("(?<=[。！？\n\r])");
                             for (String sentence : sentences) {
                                 sentence = sentence.trim();
                                 if (!sentence.isEmpty()) {
